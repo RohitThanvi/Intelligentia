@@ -1,0 +1,5 @@
+google-adk>=2.8.0
+scikit-learn>=1.4.0
+python-dotenv>=1.0.0
+google-cloud-aiplatform>=1.60.0  # optional: only needed if STRATEGIST_RAG_BACKEND=vertex
+# google-adk[extensions]  # optional: only needed if STRATEGIST_REASONING_PROVIDER=nvidia_nim (adds litellm)
