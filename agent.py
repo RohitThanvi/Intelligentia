@@ -31,7 +31,7 @@ from agents.risk.agent import risk_director
 from agents.critics.agent import red_team_loop
 from agents.synthesis.agent import synthesis_pipeline
 from tools.rag_tools import build_index
-from tools.agent_helpers import apply_rate_limit, apply_ollama_fallback, apply_gemini_429_retry, check_ollama_available
+from tools.agent_helpers import apply_rate_limit, apply_ollama_fallback, apply_gemini_429_retry, apply_pipeline_logging, check_ollama_available
 from config import settings
 
 # Build the RAG index once at import time so knowledge_retrieval_agent has
@@ -103,3 +103,10 @@ apply_ollama_fallback(root_agent)
 # anywhere kills the entire run with no recovery -- see tools/agent_helpers.py.
 # Always on; harmless no-op cost when nothing ever 429s.
 apply_gemini_429_retry(root_agent)
+
+# Prints "[pipeline] <agent_name> -> <model>" before every single LLM call in
+# the tree, in execution order. Answers "did it even reach the Ollama-routed
+# critics/synthesis stage" and "which agent was running when this crashed"
+# directly from the console log, instead of guessing from a bare
+# "model: gemini-2.5-flash" line with no attribution. Always on.
+apply_pipeline_logging(root_agent)

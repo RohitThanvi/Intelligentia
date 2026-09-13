@@ -195,6 +195,44 @@ def apply_rate_limit(agent_tree):
 
 
 # ---------------------------------------------------------------------------
+# Pipeline-stage logging: which agent is actually calling which model, when
+# ---------------------------------------------------------------------------
+
+async def _log_agent_call(callback_context=None, llm_request=None, **_):
+    """Prints exactly which agent is about to call which model, in order.
+
+    Motivation: without this, the console only ever shows "Sending out
+    request, model: gemini-2.5-flash" with no indication of WHICH of the
+    ~50 agents in the tree triggered it. That makes it impossible to answer
+    "did it even reach the Ollama-routed critics/synthesis stage yet" or
+    "which stage was running when this 429'd" from the log alone -- exactly
+    the ambiguity that came up debugging a stuck/crashed run. One cheap
+    print per LLM call; always on, no settings flag needed.
+    """
+    agent_name = getattr(callback_context, "agent_name", "?")
+    model_name = getattr(llm_request, "model", None) or "?"
+    print(f"[pipeline] {agent_name} -> {model_name}")
+    return None
+
+
+def apply_pipeline_logging(agent_tree):
+    """Walk the tree and attach _log_agent_call to EVERY leaf agent,
+    regardless of provider. Always on -- see _log_agent_call for why."""
+    def walk(a):
+        sub_agents = getattr(a, "sub_agents", None)
+        if sub_agents:
+            for s in sub_agents:
+                walk(s)
+            return
+        if not hasattr(a, "before_model_callback"):
+            return
+        _chain_before_model_callback(a, _log_agent_call)
+
+    walk(agent_tree)
+    return agent_tree
+
+
+# ---------------------------------------------------------------------------
 # Ollama robustness: automatic fallback to Gemini on ANY local failure
 # ---------------------------------------------------------------------------
 
@@ -230,8 +268,9 @@ async def _ollama_fallback_on_error(callback_context=None, llm_request=None, err
     """
     fallback_model_name = getattr(llm_request, "_strategist_fallback_gemini_model", None) \
         or settings.DEFAULT_MODEL
+    agent_name = getattr(callback_context, "agent_name", "?")
     print(
-        f"[ollama-fallback] Local Ollama call failed ({error!r}); "
+        f"[ollama-fallback] '{agent_name}': local Ollama call failed ({error!r}); "
         f"retrying with Gemini ({fallback_model_name}) instead."
     )
     try:
@@ -290,11 +329,12 @@ async def _gemini_429_retry_on_error(callback_context=None, llm_request=None, er
         return None
 
     model_name = getattr(llm_request, "model", None) or settings.DEFAULT_MODEL
+    agent_name = getattr(callback_context, "agent_name", "?")
     from google.adk.models.google_llm import Gemini
     for attempt, delay in enumerate(_GEMINI_429_BACKOFF_SECONDS, start=1):
         print(
-            f"[gemini-429] Rate-limited on '{model_name}'; waiting {delay}s "
-            f"before retry {attempt}/{len(_GEMINI_429_BACKOFF_SECONDS)}..."
+            f"[gemini-429] '{agent_name}' rate-limited on '{model_name}'; waiting "
+            f"{delay}s before retry {attempt}/{len(_GEMINI_429_BACKOFF_SECONDS)}..."
         )
         await asyncio.sleep(delay)
         try:
