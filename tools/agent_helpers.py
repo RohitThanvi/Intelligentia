@@ -260,6 +260,93 @@ async def _ollama_fallback_on_error(callback_context=None, llm_request=None, err
         return None  # None => ADK re-raises the ORIGINAL error, not this one
 
 
+# ---------------------------------------------------------------------------
+# Gemini/Vertex 429 (RESOURCE_EXHAUSTED) resilience
+# ---------------------------------------------------------------------------
+
+_GEMINI_429_BACKOFF_SECONDS = (5, 15, 45)  # ~65s of extra patience beyond ADK's own internal retry/backoff
+
+
+async def _gemini_429_retry_on_error(callback_context=None, llm_request=None, error=None, **_):
+    """on_model_error_callback: if a Gemini/Vertex call was rate-limited (429
+    RESOURCE_EXHAUSTED) even after ADK's own internal retry already gave up,
+    wait longer and retry a few more times before finally giving up.
+
+    Without this, a single 429 ANYWHERE in the ~47-agent pipeline kills the
+    ENTIRE run: an unhandled ClientError propagates all the way out of
+    base_llm_flow.py with no recovery. Via `adk web` this is what looks like
+    the run silently "pausing" -- the SSE event stream just stops with no
+    further events (a crash, not a hang), which is easy to mistake for a
+    freeze rather than the unhandled exception it actually is.
+
+    Only ever handles 429s -- any other error returns None immediately so
+    ADK re-raises it as normal. This is a targeted fix for the one failure
+    mode settings.py already documents (see MAX_REQUESTS_PER_MINUTE /
+    LOW_QUOTA_MODE comments there) as this project's actual quota-exhaustion
+    crash, not a general retry-everything shim.
+    """
+    from google.genai.errors import ClientError
+    if not (isinstance(error, ClientError) and getattr(error, "code", None) == 429):
+        return None
+
+    model_name = getattr(llm_request, "model", None) or settings.DEFAULT_MODEL
+    from google.adk.models.google_llm import Gemini
+    for attempt, delay in enumerate(_GEMINI_429_BACKOFF_SECONDS, start=1):
+        print(
+            f"[gemini-429] Rate-limited on '{model_name}'; waiting {delay}s "
+            f"before retry {attempt}/{len(_GEMINI_429_BACKOFF_SECONDS)}..."
+        )
+        await asyncio.sleep(delay)
+        try:
+            model = Gemini(model=model_name)
+            last_response = None
+            async for resp in model.generate_content_async(llm_request, stream=False):
+                last_response = resp
+            if last_response is not None:
+                print("[gemini-429] Retry succeeded.")
+                return last_response
+        except ClientError as retry_error:
+            if getattr(retry_error, "code", None) != 429:
+                print(f"[gemini-429] Retry hit a different error: {retry_error!r}. Giving up.")
+                return None
+            continue  # still rate-limited -- try the next (longer) delay
+
+    print(
+        f"[gemini-429] Still rate-limited after {len(_GEMINI_429_BACKOFF_SECONDS)} retries "
+        f"(~{sum(_GEMINI_429_BACKOFF_SECONDS)}s of backoff). Giving up -- check your GCP "
+        "quota (IAM & Admin > Quotas) or lower STRATEGIST_MAX_RPM / enable "
+        "STRATEGIST_LOW_QUOTA_MODE."
+    )
+    return None  # None => ADK re-raises the 429, run fails loudly instead of hanging silently
+
+
+def apply_gemini_429_retry(agent_tree):
+    """Walk the tree and attach the 429-backoff-retry handler to every leaf
+    agent NOT already routed through Ollama (that path has its own, separate
+    fallback -- see apply_ollama_fallback; its own Gemini fallback call can
+    still 429 without this extra backoff, a known gap noted there). Runs
+    unconditionally, not gated on any settings flag -- pure safety net, zero
+    cost when nothing ever 429s.
+    """
+    def walk(a):
+        sub_agents = getattr(a, "sub_agents", None)
+        if sub_agents:
+            for s in sub_agents:
+                walk(s)
+            return
+        model_name = _model_string_of(a)
+        if isinstance(model_name, str) and (
+            model_name.startswith("ollama_chat/") or model_name.startswith("ollama/")
+        ):
+            return  # handled by apply_ollama_fallback instead
+        if not hasattr(a, "on_model_error_callback"):
+            return
+        _chain_on_model_error_callback(a, _gemini_429_retry_on_error)
+
+    walk(agent_tree)
+    return agent_tree
+
+
 def apply_ollama_fallback(agent_tree):
     """Walk an already-built agent tree and attach the Ollama->Gemini
     fallback to every leaf agent actually routed through Ollama. No-op

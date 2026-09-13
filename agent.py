@@ -31,7 +31,7 @@ from agents.risk.agent import risk_director
 from agents.critics.agent import red_team_loop
 from agents.synthesis.agent import synthesis_pipeline
 from tools.rag_tools import build_index
-from tools.agent_helpers import apply_rate_limit, apply_ollama_fallback, check_ollama_available
+from tools.agent_helpers import apply_rate_limit, apply_ollama_fallback, apply_gemini_429_retry, check_ollama_available
 from config import settings
 
 # Build the RAG index once at import time so knowledge_retrieval_agent has
@@ -96,3 +96,10 @@ apply_rate_limit(root_agent)
 # overflow, etc.) -- keeps a single flaky local inference from killing the
 # whole pipeline run. No-op if REASONING_PROVIDER isn't "ollama".
 apply_ollama_fallback(root_agent)
+
+# Retry-with-backoff for Vertex/Gemini 429 RESOURCE_EXHAUSTED, on every
+# leaf agent (the vast majority of this tree calls Gemini directly, not
+# through get_reasoning_model/Ollama). Without this, a single rate-limit hit
+# anywhere kills the entire run with no recovery -- see tools/agent_helpers.py.
+# Always on; harmless no-op cost when nothing ever 429s.
+apply_gemini_429_retry(root_agent)

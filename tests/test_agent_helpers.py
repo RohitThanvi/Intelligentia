@@ -12,7 +12,7 @@ import asyncio
 import os
 import sys
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import patch, AsyncMock
 
 import pytest
 
@@ -181,6 +181,98 @@ def test_critics_loop_reads_max_iterations_from_settings():
     from agents.critics.agent import red_team_loop
     from config import settings as settings_module
     assert red_team_loop.max_iterations == settings_module.MAX_ITERATIONS
+
+
+# ---------------------------------------------------------------------------
+# Gemini 429 (RESOURCE_EXHAUSTED) retry-with-backoff
+# ---------------------------------------------------------------------------
+
+def _client_error(code):
+    from google.genai.errors import ClientError
+    return ClientError(code=code, response_json={"error": {"code": code, "status": "X"}})
+
+
+def test_429_retry_ignores_non_429_errors():
+    """Must not intercept unrelated failures -- only 429s are its job."""
+    llm_request = SimpleNamespace(model="gemini-2.5-flash")
+    result = asyncio.run(agent_helpers._gemini_429_retry_on_error(
+        llm_request=llm_request, error=RuntimeError("some other failure"),
+    ))
+    assert result is None
+
+
+def test_429_retry_succeeds_on_second_attempt(monkeypatch):
+    """Regression test for the crash where a single 429 anywhere in the tree
+    killed the entire run with no recovery -- verifies the handler actually
+    retries (not just detects) and returns a real response once one attempt
+    succeeds, rather than giving up after the first retry fails."""
+    monkeypatch.setattr(agent_helpers.asyncio, "sleep", AsyncMock())  # skip real backoff delays in tests
+    llm_request = SimpleNamespace(model="gemini-2.5-flash")
+
+    calls = {"n": 0}
+
+    async def fake_generate(self, request, stream=False):
+        calls["n"] += 1
+        if calls["n"] < 2:
+            raise _client_error(429)
+        yield SimpleNamespace(text="recovered")
+
+    with patch("google.adk.models.google_llm.Gemini.generate_content_async", new=fake_generate):
+        result = asyncio.run(agent_helpers._gemini_429_retry_on_error(
+            llm_request=llm_request, error=_client_error(429),
+        ))
+
+    assert result is not None and result.text == "recovered"
+    assert calls["n"] == 2
+
+
+def test_429_retry_gives_up_after_exhausting_all_attempts(monkeypatch):
+    monkeypatch.setattr(agent_helpers.asyncio, "sleep", AsyncMock())
+    llm_request = SimpleNamespace(model="gemini-2.5-flash")
+
+    async def always_429(self, request, stream=False):
+        raise _client_error(429)
+        yield  # pragma: no cover -- unreachable, keeps this an async generator
+
+    with patch("google.adk.models.google_llm.Gemini.generate_content_async", new=always_429):
+        result = asyncio.run(agent_helpers._gemini_429_retry_on_error(
+            llm_request=llm_request, error=_client_error(429),
+        ))
+
+    assert result is None  # None => ADK re-raises, run fails loudly instead of hanging
+
+
+def test_429_retry_stops_immediately_on_a_different_error_mid_retry(monkeypatch):
+    """If the retry itself fails with something other than 429 (e.g. the
+    quota issue resolved but now there's a real auth problem), don't keep
+    burning through the backoff schedule -- give up right away."""
+    monkeypatch.setattr(agent_helpers.asyncio, "sleep", AsyncMock())
+    llm_request = SimpleNamespace(model="gemini-2.5-flash")
+
+    async def different_error(self, request, stream=False):
+        raise _client_error(403)
+        yield  # pragma: no cover
+
+    with patch("google.adk.models.google_llm.Gemini.generate_content_async", new=different_error):
+        result = asyncio.run(agent_helpers._gemini_429_retry_on_error(
+            llm_request=llm_request, error=_client_error(429),
+        ))
+
+    assert result is None
+
+
+def test_apply_gemini_429_retry_skips_ollama_routed_leaves(monkeypatch):
+    """Ollama-routed leaves keep their own (different) fallback via
+    apply_ollama_fallback -- this handler must not double-wrap them."""
+    gemini_agent = _leaf("gemini_agent", "gemini-2.5-flash")
+    ollama_model = SimpleNamespace(model="ollama_chat/llama3.1:8b")
+    ollama_agent = _leaf("ollama_agent", ollama_model)
+    tree = SimpleNamespace(sub_agents=[gemini_agent, ollama_agent])
+
+    agent_helpers.apply_gemini_429_retry(tree)
+
+    assert gemini_agent.on_model_error_callback is agent_helpers._gemini_429_retry_on_error
+    assert ollama_agent.on_model_error_callback is None
 
 
 if __name__ == "__main__":
