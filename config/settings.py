@@ -5,6 +5,8 @@ sensitive comes from environment variables, typically loaded from a local
 """
 import os
 
+from schemas.state import DEFAULT_MAX_ITERATIONS
+
 # --- Vertex AI / Gemini auth ---
 # Either set GOOGLE_API_KEY (AI Studio key) for local dev,
 # or set these three for Vertex AI project-based auth (recommended for prod):
@@ -13,7 +15,13 @@ GOOGLE_CLOUD_PROJECT = os.environ.get("GOOGLE_CLOUD_PROJECT", "")
 GOOGLE_CLOUD_LOCATION = os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
 
 # --- App-level settings ---
-MAX_ITERATIONS = int(os.environ.get("STRATEGIST_MAX_ITERATIONS", "3"))
+# NOTE: this is the ACTUAL knob that controls the red-team/validate/revise
+# loop's bound (LoopAgent(max_iterations=...) in agents/critics/agent.py) and
+# what final_synthesis_agent is told the cap is. Both of those used to read
+# schemas.state.DEFAULT_MAX_ITERATIONS directly instead of this setting, which
+# silently ignored STRATEGIST_MAX_ITERATIONS entirely -- fixed to read from
+# here so the env var actually takes effect.
+MAX_ITERATIONS = int(os.environ.get("STRATEGIST_MAX_ITERATIONS", str(DEFAULT_MAX_ITERATIONS)))
 DEFAULT_MODEL = os.environ.get("STRATEGIST_DEFAULT_MODEL", "gemini-2.5-flash")
 SYNTHESIS_MODEL = os.environ.get("STRATEGIST_SYNTHESIS_MODEL", "gemini-2.5-pro")
 

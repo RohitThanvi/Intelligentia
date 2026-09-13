@@ -3,7 +3,7 @@ from google.adk.agents import LlmAgent, SequentialAgent
 from google.adk.tools import FunctionTool
 
 from tools.evidence_tools import validate_evidence
-from schemas.state import DEFAULT_MAX_ITERATIONS
+from config import settings
 from tools.agent_helpers import get_reasoning_model
 
 MODEL = get_reasoning_model("gemini-2.5-pro")  # same default as before; NVIDIA NIM/Nemotron if opted in via .env
@@ -55,7 +55,7 @@ Red team findings across iterations: {{red_team_findings?}}
 Validation result: {{validation_result?}}
 Revision notes: {{revision_notes?}}
 Evidence audit: {{evidence_audit?}}
-Iteration count: {{iteration_count?}} (max allowed: {DEFAULT_MAX_ITERATIONS} -- if this equals the max,
+Iteration count: {{iteration_count?}} (max allowed: {settings.MAX_ITERATIONS} -- if this equals the max,
 explicitly disclose that iteration was capped and some findings may be unresolved)
 
 Where agents disagreed (e.g. an alternatives evaluator said a simpler
@@ -75,9 +75,9 @@ Scale); Governance; Success Metrics; Key Assumptions; Unresolved Questions;
 Evidence and Sources.
 
 Then output a fenced ```json block with:
-{{{{"recommendation": "GO|PILOT|NO-GO", "confidence": 0.0, "top_use_cases": [],
-"alternatives_considered": [], "roi": {{{{}}}}, "risks": [],
-"critical_assumptions": [], "evidence": [], "implementation_phases": []}}}}
+{{"recommendation": "GO|PILOT|NO-GO", "confidence": 0.0, "top_use_cases": [],
+"alternatives_considered": [], "roi": {{}}, "risks": [],
+"critical_assumptions": [], "evidence": [], "implementation_phases": []}}
 """,
     output_key="final_recommendation",
 )

@@ -47,12 +47,16 @@ STATE_RISK_SUMMARY = "risk_summary"
 # --- Red team / iteration ---
 STATE_RED_TEAM_FINDINGS = "red_team_findings"
 STATE_VALIDATION_RESULT = "validation_result"
+STATE_REVISION_NOTES = "revision_notes"
 STATE_ITERATION_COUNT = "iteration_count"
 STATE_MAX_ITERATIONS = "max_iterations"
+STATE_ITERATION_HISTORY = "iteration_history"  # list of per-pass snapshots; see tools/report_tools.py
 STATE_LOOP_SHOULD_STOP = "loop_should_stop"  # bool, checked by escalation tool
 
 # --- Final ---
+STATE_EVIDENCE_AUDIT = "evidence_audit"
 STATE_FINAL_RECOMMENDATION = "final_recommendation"
+STATE_PROCESS_REPORT = "process_report"  # see tools/report_tools.py::generate_process_report
 
 DEFAULT_MAX_ITERATIONS = 3
 

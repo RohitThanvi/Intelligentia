@@ -237,6 +237,17 @@ async def _ollama_fallback_on_error(callback_context=None, llm_request=None, err
     try:
         from google.adk.models.google_llm import Gemini
         fallback = Gemini(model=fallback_model_name)
+        # Gemini.generate_content_async reads the model name to call from
+        # llm_request.model, NOT from the Gemini instance's own .model field
+        # -- ADK's base_llm_flow stamps llm_request.model with the ORIGINAL
+        # agent's model string ("ollama_chat/llama3.1:8b") before this
+        # callback ever runs, and that field is otherwise untouched here.
+        # Without this line, the fallback silently sends the Ollama model
+        # string to Vertex/Gemini, which (mis)parses the slash as a
+        # publishers/{x}/models/{y} path and fails with an
+        # "Invalid Endpoint name" error -- masking the ORIGINAL Ollama
+        # failure and defeating the whole point of this fallback.
+        llm_request.model = fallback_model_name
         last_response = None
         async for resp in fallback.generate_content_async(llm_request, stream=False):
             last_response = resp

@@ -43,6 +43,24 @@ build_index()
 if settings.REASONING_PROVIDER == "ollama":
     check_ollama_available()
 
+async def _emit_process_report(callback_context):
+    """Runs once, after the ENTIRE pipeline has finished (root_agent is a
+    SequentialAgent, so after_agent_callback fires only after every
+    sub_agent above has completed and every state key it writes is already
+    populated). Builds the process+outcome report deterministically (see
+    tools/report_tools.py) and returns it as a real Content event so it's
+    part of what the caller actually sees -- not just something buried in
+    session state that only a follow-up programmatic read would surface.
+    """
+    from google.genai import types
+    from tools.report_tools import generate_process_report
+    from schemas.state import STATE_PROCESS_REPORT
+
+    report_text = generate_process_report(callback_context.state)
+    callback_context.state[STATE_PROCESS_REPORT] = report_text
+    return types.Content(role="model", parts=[types.Part(text=report_text)])
+
+
 root_agent = SequentialAgent(
     name="enterprise_genai_strategist",
     description=(
@@ -64,6 +82,7 @@ root_agent = SequentialAgent(
         red_team_loop,
         synthesis_pipeline,
     ],
+    after_agent_callback=_emit_process_report,
 )
 
 # Enforces real request-per-minute spacing across EVERY agent in the tree

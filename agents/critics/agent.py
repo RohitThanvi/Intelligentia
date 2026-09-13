@@ -11,8 +11,9 @@ iterations are reached, explicitly disclose that").
 from google.adk.agents import LlmAgent, SequentialAgent, LoopAgent
 from google.adk.tools import FunctionTool, ToolContext
 
-from schemas.state import DEFAULT_MAX_ITERATIONS
+from config import settings
 from tools.agent_helpers import get_reasoning_model
+from schemas.state import STATE_ITERATION_HISTORY
 
 MODEL = get_reasoning_model("gemini-2.5-flash")  # same default as before; NVIDIA NIM/Nemotron if opted in via .env
 # no google_search or VertexAiRagRetrieval used anywhere in this file --
@@ -43,7 +44,7 @@ def increment_iteration(tool_context: ToolContext) -> dict:
     """
     count = tool_context.state.get("iteration_count", 0) + 1
     tool_context.state["iteration_count"] = count
-    return {"iteration_count": count, "max_iterations": DEFAULT_MAX_ITERATIONS}
+    return {"iteration_count": count, "max_iterations": settings.MAX_ITERATIONS}
 
 
 exit_loop_tool = FunctionTool(exit_loop)
@@ -127,15 +128,36 @@ validator called exit_loop, briefly confirm no revision is needed this pass.""",
     output_key="revision_notes",
 )
 
+async def _record_iteration_snapshot(callback_context):
+    """Runs once per pass through the loop body (red_team -> validator ->
+    revision), BEFORE the next pass overwrites red_team_findings /
+    validation_result / revision_notes with output_key. Deterministic --
+    doesn't depend on any agent remembering to call a tool -- so the process
+    report (tools/report_tools.py) always gets a full history, not just
+    whatever survived from the last iteration.
+    """
+    state = callback_context.state
+    history = list(state.get(STATE_ITERATION_HISTORY, []) or [])
+    history.append({
+        "iteration": state.get("iteration_count"),
+        "red_team_findings": state.get("red_team_findings"),
+        "validation_result": state.get("validation_result"),
+        "revision_notes": state.get("revision_notes"),
+    })
+    state[STATE_ITERATION_HISTORY] = history
+    return None
+
+
 _critic_loop_body = SequentialAgent(
     name="critic_loop_body",
     description="One pass: red team attacks, validator judges, revision agent responds.",
     sub_agents=[red_team_agent, validator_agent, revision_agent],
+    after_agent_callback=_record_iteration_snapshot,
 )
 
 red_team_loop = LoopAgent(
     name="red_team_loop",
     description="Repeats red-team/validate/revise until no material weaknesses remain, bounded by max_iterations.",
     sub_agents=[_critic_loop_body],
-    max_iterations=DEFAULT_MAX_ITERATIONS,
+    max_iterations=settings.MAX_ITERATIONS,
 )
